@@ -1,27 +1,23 @@
-from abc import abstractmethod
-
 from loguru import logger
-from pubsub import pub
 
 # Communication Controller Class inherits from Communication controller class
 import CONFIG
-from Agent import Agent, AgentRole
-from DataPoint import Request, DataPoint
+from DataPoint import Shadow, DataPoint
 from PlatformQueue import PlatformQueue
 from PlatfromHashTable import PlatformHashTable
+from PlatformEntity import PlatformEntity
 
 
 # General Communication Controller Class
 class CC:
-    def __init__(self, platform, my_id: str, topic: str):
+    def __init__(self, platform, my_id="CC"):
         self.my_id = my_id
         self.platform = platform
-        self.service = None
+        self.service: PlatformEntity = None
         self.agents_handler = None
-        self.topic = topic
 
         # Create hash tables and Queues
-        # save unfulfilled agent requests by employer
+        # save unfulfilled agent requests by machine
         self.machine_requests_queue = PlatformQueue()
 
         # save unfulfilled agent requests by service
@@ -32,89 +28,107 @@ class CC:
 
         # event loop for running internal coroutines
         # self.loop: asyncio.AbstractEventLoop = asyncio.get_event_loop()
-        # topics to subscribe to
-        pub.subscribe(self.on_new_agent_requested, CONFIG.TOPIC_CC_CHECK_REQUESTS_QUEUE)
 
-    # monitor resources and requests before assigning agents
+    # TODO: monitor resources and requests before assigning agents
 
-    # function to listen to data_response addition events
+    # function to listen to request addition events
     def on_new_agent_requested(self):
-        # check on service requests first due to higher priority
-
         # TODO: (Real-time Scheduling) manage granting of agents to either machine or ECE
-        while not self.service_requests_queue.is_empty():
-            request = self.service_requests_queue.get()
-            # if no agent is granted then there is not enough agents
-            if not self.grant_request(request=request):
-                # leave the loop
-                break
-
         while not self.machine_requests_queue.is_empty():
-            # retrieve data_response from requests queue
-            request = self.machine_requests_queue.get()
-            # if no agent is granted then there is not enough agents
-            if not self.grant_request(request=request):
-                # leave the loop
-                break
+            # retrieve request from requests queue
+            request_shadow = self.machine_requests_queue.get()
+            request_id = request_shadow.my_id
+            machine_id = request_shadow.extra_id
+            # Attempt to grant agent
+            granted_flag, transaction_id = self.prepare_agent(entity_id=machine_id, request_id=request_id)
+            if granted_flag:
+                # grant agent
+                self.machine_grant_agent(machine_id=machine_id, request_id=request_id, transaction_id=transaction_id)
+                logger.info(self.my_id + ' ' + f'agent request {request_id} granted to {machine_id}')
+            else:
+                # return request to queue
+                self.machine_requests_queue.put(request_shadow)
+        while not self.service_requests_queue.is_empty():
+            request_shadow = self.service_requests_queue.get()
+            request_id = request_shadow.my_id
+            # Attempt to grant agent
+            granted_flag, transaction_id = self.prepare_agent(entity_id=self.service.my_id, request_id=request_id)
+            if granted_flag:
+                # grant agent
+                self.service_grant_agent(request_id=request_id, transaction_id=transaction_id)
+                logger.info(self.my_id + ' ' + f'agent request {request_id} granted to {self.service.my_id}')
+            else:
+                # return request to queue
+                self.service_requests_queue.put(request_shadow)
 
-    # functions for CC-to-any communications
-
-    # function called by employer to data_response an agent
-    def request_agent(self, request: Request):
-        if request.source_id is self.service.my_id:
-            self.service_requests_queue.put(item=request)
+    # function called by PlatformAgentHandler to forward agent to destination
+    def forward_agent(self, transaction_id: str, destination_id: str):
+        if destination_id is self.service.my_id:
+            self.service.cc_service_function(transaction_id)
         else:
-            # put data_response in queue
-            self.machine_requests_queue.put(item=request)
+            self.platform.mi_machine_return_agent(machine_id=destination_id, transaction_id=transaction_id)
 
-        # log data_response
-        logger.info(self.my_id + ' ' + f'agent requested by {request.source_id}')
+        logger.info(self.my_id + ' ' + f'agent transaction {transaction_id} forwarded to {destination_id}')
+
+    # functions for CC-to-machine communications
+
+    # function called by machine to request an agent
+    def machine_request_agent(self, machine_id, request_id, priority=CONFIG.PRIORITY_DEFAULT):
+        # put request in queue
+        self.machine_requests_queue.put(Shadow(reference_id=request_id, extra_id=machine_id, priority=priority))
+
+        # log to console
+        if CONFIG.LOGGING_CONSOLE_ALLOWED:
+            print(f"FCA request received: {request_id}")
+
+        # log request
+        logger.info(self.my_id + ' ' + f'agent requested by machine {machine_id}')
 
         # call CC events listener
         self.on_new_agent_requested()
 
-    # function for granting requests
-    def grant_request(self, request: Request):
-        agent = self.reserve_agent(request=request)
-        # check if agent is granted
-        if agent is not None:
-            # prepare and grant agent
-            agent.prepare_from_request(request=request)
-            self.set_agent_role(agent=agent)
-            logger.info(self.my_id + ' ' + f'agent request {request.request_id} granted to {request.source_id}')
-            agent.to_source()
-            dispatch_status = True
-        else:
-            logger.info(self.my_id + ' ' + f'agent request {request.request_id} failed, returned to queue')
-            # return data_response to queue
-            self.service_requests_queue.put(request)
-            dispatch_status = False
-        return dispatch_status
+    # function called by CC to grant agent to machine
+    def machine_grant_agent(self, machine_id: str, request_id: str, transaction_id: str):
+        # grant agent to machine
+        self.platform.mi_machine_grant_agent(machine_id=machine_id,
+                                             request_id=request_id, transaction_id=transaction_id)
 
-    # reserve agent to grant a data_response
-    def reserve_agent(self, request: Request):
-        request_id = request.request_id
-        entity_id = request.source_id
+    # Functions for communication with ECE
 
+    # function for ECE to request agent
+    def service_request_agent(self, request_id: str, priority=CONFIG.PRIORITY_DEFAULT):
+        self.service_requests_queue.put(Shadow(reference_id=request_id, extra_id=CONFIG.ID_ECE, priority=priority))
+
+        # log request by service
+        logger.info(self.my_id + ' ' + f'agent requested by service {self.service.my_id}')
+
+        self.on_new_agent_requested()
+
+    def service_grant_agent(self, request_id: str, transaction_id: str):
+        # grant agent to machine
+        self.service.cc_grant_agent(request_id=request_id, transaction_id=transaction_id)
+
+    # reserve agent to grant a request
+    def prepare_agent(self, entity_id: str, request_id: str):
         # generate transaction_id
         transaction_id = self.generate_transaction_id(entity_id=entity_id, request_id=request_id)
 
-        # attempt to reserve agent
-        agent = self.agents_handler.reserve_agent()
-        agent.transaction_id = transaction_id
+        # get agent from agents queue
+        deployment_status = self.agents_handler.reserve_agent(cc_id=self.my_id, transaction_id=transaction_id)
 
-        return agent
+        # Relate agent to machine using shadow agent
+        shadow_agent = Shadow(reference_id=transaction_id, data=entity_id)
+        self.shadow_agents_table.insert(shadow_agent)
 
-    # method to set agent role (dependent on CC module)
-    @abstractmethod
-    def set_agent_role(self, agent: Agent):
-        raise NotImplementedError
+        logger.info(self.my_id + ' ' + f'agent request {request_id} prepared for {entity_id}')
+
+        return deployment_status, transaction_id
 
     # method to generate transaction_id
     @staticmethod
     def generate_transaction_id(entity_id: str, request_id: str):
         # TODO: find suitable generation method
-        return entity_id + ":" + str(request_id)
+        return entity_id + str(request_id)
 
     # method to register relevant entities
     def register_in_platform(self):
@@ -127,27 +141,19 @@ class CC:
 
 class FCC(CC):
     def __init__(self, platform):
-        super().__init__(platform, my_id=CONFIG.ID_FCC, topic=CONFIG.TOPIC_FCC)
-
-    def set_agent_role(self, agent: Agent):
-        agent.set_role(AgentRole.FACTORY)
+        CC.__init__(self, platform, my_id=CONFIG.ID_FCC)
 
     # method to register relevant entities
     def register_in_platform(self):
         CC.register_in_platform(self)
         self.service = self.platform.ece
-        pub.subscribe(self.request_agent, topicName=self.topic)
 
 
 class BCC(CC):
     def __init__(self, platform):
-        super().__init__(platform, my_id=CONFIG.ID_BCC, topic=CONFIG.TOPIC_BCC)
-
-    def set_agent_role(self, agent: Agent):
-        agent.set_role(AgentRole.BIDDING)
+        CC.__init__(self, platform, my_id=CONFIG.ID_BCC)
 
     # method to register relevant entities
     def register_in_platform(self):
         CC.register_in_platform(self)
-        self.service = self.platform.market
-        pub.subscribe(self.request_agent, topicName=self.topic)
+        self.service = self.bidding_module.market

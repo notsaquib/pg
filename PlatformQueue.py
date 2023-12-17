@@ -3,23 +3,20 @@ from queue import Queue
 from asyncio import PriorityQueue
 
 import CONFIG
-from DataPoint import Request
+from DataPoint import Shadow
 
 
 class PlatformQueue():
-    def __init__(self, max_size=CONFIG.N_INITIAL_CAPACITY):
+    def __init__(self, max_size=CONFIG.N_AGENTS):
         self.queue = PriorityQueue(max_size)
 
-    def put(self, item):
-        if isinstance(item, Request):
-            priority = item.priority
+    def put(self, new_item):
+        if isinstance(new_item, Shadow):
+            priority = new_item.priority
         else:
             priority = CONFIG.PRIORITY_DEFAULT
 
-        self.queue.put_nowait((priority, item))
-
-    def put_priority_highest(self, item):
-        self.queue.put_nowait((0, item))
+        self.queue.put_nowait((priority, new_item))
 
     def get(self):
         data = self.queue.get_nowait()[1]

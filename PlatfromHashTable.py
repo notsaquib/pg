@@ -5,7 +5,7 @@ from Agent import Agent
 from DataPoint import DataPoint
 
 
-# Node data_response structure - essentially a LinkedList node
+# Node data structure - essentially a LinkedList node
 class Node:
     def __init__(self, key, value):
         self.key = key
@@ -64,7 +64,7 @@ class HashTable:
         # Add a new node at the end of the list with provided key/value
         prev.next = Node(key, value)
 
-    # Find a data_response value based on key
+    # Find a data value based on key
     # Input:  key - string
     # Output: value stored under "key" or None if not found
     def find(self, key):
@@ -80,12 +80,12 @@ class HashTable:
             # Not found
             return None
         else:
-            # Found - return the data_response value
+            # Found - return the data value
             return node.value
 
     # Remove node stored at key
     # Input:  key - string
-    # Output: removed data_response value or None if not found
+    # Output: removed data value or None if not found
     def remove(self, key):
         # 1. Compute hash
         index = self.hash(key)
@@ -112,7 +112,7 @@ class HashTable:
             return result
 
 
-# Generic class for all data_response tables in employer
+# Generic class for all data tables in machine
 class PlatformHashTable():
     def __init__(self, init_buckets: int =CONFIG.N_INITIAL_CAPACITY):
         # HashTable.__init__(self, init_buckets)
@@ -146,9 +146,3 @@ class PlatformHashTable():
         self.keys_list.remove(key)
         # return HashTable.remove(self, key)
         return self.hash_table.pop(key)
-
-    def keys(self):
-        return list(self.hash_table.keys())
-
-    def values(self):
-        return list(self.hash_table.values())

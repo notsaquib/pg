@@ -1,14 +1,10 @@
-# main employer class
-import pubsub.pub
-from loguru import logger
-from pubsub import pub
-
-# all employer submodules and intelligence happen here
+# main machine class
+# all machine submodules and intelligence happen here
 import CONFIG
-from Enums import EcoInfo
-from DataPoint import Mayfly
-from AgentHandler import AgentHandler
-from MachineEventListener import MachineEventListener
+from DataPoint import EstimationDataPoint
+from DataPoint import Shadow
+from MachineAgentHandler import MachineAgentHandler
+from MachineEventListener import MachineEventListener, MachineEvent
 from MachineRecordKeeper import MachineRecordKeeper
 from MachineScheduleGenerator import MachineScheduleGenerator
 from MachineStrategyBlock import MachineStrategyBlock
@@ -18,13 +14,12 @@ from PlatformEntity import PlatformEntity
 
 class Machine(PlatformEntity):
     def __init__(self, platform):
-        super().__init__()
         # register platform
         self.platform = platform
 
-        # Declare employer sub-modules
-        self.agents_handler = AgentHandler(employer=self, super_topic=CONFIG.TOPIC_SUPER_MACHINES)
+        # Declare machine sub-modules
         self.events_listener = MachineEventListener(self)
+        self.agents_handler = MachineAgentHandler(self)
         self.records_keeper = MachineRecordKeeper(self)
         self.scheduler = MachineScheduleGenerator(self)
         self.bidder = MachineStrategyBlock(self)
@@ -35,75 +30,72 @@ class Machine(PlatformEntity):
         # request_id count
         self._request_id = 0
 
-        # subscribe to topic that indicates when market is ready
-        pub.subscribe(self.start_bidding_round, topicName=CONFIG.TOPIC_PLATFORM_MARKET_READY)
-
     # event response functions
 
     # function to respond to job_id addition event
-    def on_job_added(self):
+    def on_job_added(self, machine_event: MachineEvent):
+        # Fetch data to be requested (should get job_id datapoint)
+        job = machine_event.data
+
+        # create new estimation datapoint
+        new_estimate_datapoint = EstimationDataPoint.create_from_job(job)
+
+        # create a new request_id
+        current_request_id = CONFIG.NAME_REQUEST_ESTIMATION + self.request_id
+
+        # add the job_id to the shadow_jobs_table
+        shadow_job = Shadow(reference_id=job.my_id, extra_id=current_request_id)
+
+        # insert in HashTable
+        self.price_requests_table.insert(shadow_job)
+
+        # request agent for estimation
+        # take back request_id for tracking & logging
+        self.agents_handler.request_factory_agent(request_id=current_request_id, data=new_estimate_datapoint)
+
+    # function to respond to missing price estimation event
+    def on_missing_estimation(self, machine_event: MachineEvent):
+        # Fetch data to be requested
+        estimate_dp = machine_event.data
+
+        # create a new request_id
+        current_request_id = CONFIG.NAME_REQUEST_ESTIMATION + self.request_id
+
+        # add the job_id to the shadow_jobs_table
+        shadow_data = Shadow(reference_id=estimate_dp.my_id, extra_id=current_request_id)
+
+        # insert in HashTable
+        self.price_requests_table.insert(shadow_data)
+
+        # request agent for estimation
+        # take back request_id for tracking & logging
+        self.agents_handler.request_factory_agent(request_id=current_request_id, data=estimate_dp)
+
+    # function to respond to price estimation acquired event
+    def on_estimation_acquired(self, machine_event: MachineEvent):
+        # remove request_id from HashTable (data_id should be job_id)
+        shadow_job = self.price_requests_table.remove(machine_event.data_id)
+        job_id = shadow_job.my_id
+
+        # prices should be of type EstimationDatapoint
+        prices_datapoint = machine_event.data
+
+        # record new price
+        self.records_keeper.add_prices(prices_datapoint, job_id=job_id)
+
+    def on_estimation_added(self, machine_event):
+        # TODO: Add job_id to record of non-scheduled jobs
         pass
 
-    # function to respond to missing offer estimation event
-    def on_missing_estimation(self):
+    def on_schedules_generated(self, machine_event: MachineEvent):
+        self.bidder.evaluate_nominal_schedules()
+        self.bidder.implement_strategies_bidding()
+
+    def on_bids_generated(self, machine_event: MachineEvent):
+        print("End here")
         pass
 
-    # function to respond to offer estimation acquired event
-    def on_estimation_acquired(self):
-        pass
-
-    def on_estimation_added(self):
-        # calculate schedule energy costs using newly acquired info
-        self.records_keeper.calculate_all_schedule_energy_costs()
-        # evaluate schedules using nominal evaluation
-        self.bidder.eval_nominal_schedules()
-        # generate bids
-        self.bidder.implement_strategy_bidding()
-
-    def on_schedules_generated(self):
-        # figure out the missing time-offer information
-        # get the earliest and latest time in all schedules
-        time_start = min(
-            [schedule.get_time_first() for schedule in list(self.records_keeper.schedules_record.values())])
-        time_finish = max(
-            [schedule.get_time_last() for schedule in list(self.records_keeper.schedules_record.values())])
-
-        price_mayfly = Mayfly(request_id=self.request_id, data_id="ALL_PRICES", priority=CONFIG.PRIORITY_DEFAULT)
-        price_mayfly.create_factory_params(time_start=time_start, time_finish=time_finish, data_type=EcoInfo.WHOLESALE)
-        price_mayfly.set_action_return(self.records_keeper.add_prices)
-
-        self.agents_handler.request_factory_agent(request_data=price_mayfly)
-
-    # event triggered when bids are generated
-    @staticmethod
-    def on_bids_generated():
-        # notify platform that bids are ready
-        pub.sendMessage(topicName=CONFIG.TOPIC_PLATFORM_NOTIFY_MACHINE_BIDS_GENERATED)
-        # self.platform.machine_bids_generated()
-        pass
-
-    # method called when no more bids available
-
-    # method called when next bidding round is ready
-    def start_bidding_round(self):
-        # check if bid is available at current time
-        time_current = self.platform.time_running
-        # inform platform that bids are ready
-        # self.platform.machine_bid_ready()
-        pub.sendMessage(topicName=CONFIG.TOPIC_PLATFORM_NOTIFY_MACHINE_BID_READY)
-        # check if bid exists for current bidding time
-        if self.bidder.is_bid_time(time=time_current):
-            # log bid submission
-            logger.info(self.my_id + f": bid submitted for time: {time_current}")
-            # prepare bid agent
-            bid_mayfly = self.bidder.get_bid_mayfly(time=time_current, request_id=self.request_id)
-            # agent bidding agent
-            self.agents_handler.request_bidding_agent(request_data=bid_mayfly)
-        else:
-            # log no bid submission
-            logger.info(self.my_id + f": no bid submitted for time: {time_current}")
-
-    # function to register employer with platform
+    # function to register machine with platform
     def register_in_platform(self):
         self.my_id = self.platform.get_machine_id(self)
 
@@ -115,4 +107,4 @@ class Machine(PlatformEntity):
     @property
     def request_id(self):
         self._request_id += 1
-        return CONFIG.NAME_REQUEST_MACHINE + str(self._request_id)
+        return str(self._request_id)

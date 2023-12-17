@@ -1,14 +1,12 @@
 # Configuration file
 # imports
-from __future__ import annotations
-
+from enum import Enum
 from datetime import datetime
-from inputimeout import TimeoutOccurred
+from inputimeout import inputimeout, TimeoutOccurred
 from configparser import ConfigParser
 import numpy as np
 
 from CONFIG_PROFILES import ConfigProfile, SimParam
-from Enums import JobRecField, JobConstraint, JobStatus, ObjectiveJob, ObjectiveGeneral, ObjectiveEval, EcoInfo
 
 # Read simulation parameters from a config.ini
 config_sim = ConfigParser()
@@ -20,10 +18,8 @@ try:
     test_profile = input(f'Choose test profile({list(ConfigProfile.__dict__.values())[1:4]}): ')
     sim_profile = config_sim[test_profile]
 except (TimeoutOccurred, KeyError):
-    test_profile = ConfigProfile.TEST
-    sim_profile = config_sim[test_profile]
-
-print(f'Running profile: {test_profile}')
+    print('Running profile: TEST')
+    sim_profile = config_sim[ConfigProfile.TEST]
 
 # Simulation Parameters
 N_MACHINES = int(sim_profile[SimParam.NUM_MACHINES])
@@ -33,11 +29,7 @@ N_AGENTS = int(sim_profile[SimParam.NUM_AGENTS])  # Maximum number of agents cre
 N_SUPPLIERS = N_MACHINES
 WEIGHT_OBJECTIVE_SPECIFIED = 10  # emphasis weight for specified objectives vs unspecified ones
 DEFAULT_BIDDING_MARKUP = 1  # in %
-N_BIDS_DEFAULT = 1  # number of bids that can be submitted by a employer for a single time-slot
-FACTOR_AGENTS_MIN = 0.1  # fraction of agents that are deployed before a market round is triggered
-N_AGENTS_MIN = 1 if int(N_AGENTS * FACTOR_AGENTS_MIN) <= 0 else int(N_AGENTS * FACTOR_AGENTS_MIN)
-DEFAULT_ECO_INFO = EcoInfo.WHOLESALE
-N_INITIAL_CAPACITY = N_JOBS * 20  # Initial number of buckets in all the HashTables and Queues
+DEFAULT_NUM_BIDS = 1
 
 # Priority
 # number of priority levels including zero. The lower priority value, the higher the priority.
@@ -48,23 +40,17 @@ PRIORITY_WEIGHT_NOMINAL = 1  # additional weight factored over the profile-calcu
 # PRIORITY_PROFILE = PriorityProfile.EXPONENTIAL (see below)
 
 # Supplier Parameters
-PRICE_SUPPLY_MARGIN_MAX = 0.05  # maximum margin over ECE data_response that a supplier can charge
-PRICE_SUPPLY_MARGIN_MIN = -0.05  # minimum margin below ECE data_response that a supplier can charge
+PRICE_SUPPLY_MARGIN_MAX = 0.05  # maximum margin over ECE data that a supplier can charge
+PRICE_SUPPLY_MARGIN_MIN = -0.05  # minimum margin below ECE data that a supplier can charge
 
 # constants
 # PlatformEntity IDs
 ID_ECE = "ECE"
 ID_FCC = "FCC"
 ID_BCC = "BCC"
-ID_MARKET = "BiddingModule"  # name of bidding module
-ID_PLATFORM = "Platform"
-ID_EXTERNAL_MARKET = "ExternalMarket"  # Energy suppliers module name
 
 # Naming conventions
-NAME_REQUEST_ESTIMATION = "RE"
-NAME_REQUEST_MACHINE = "RM"
-NAME_REQUEST_EXT_MARKET = "RK"
-NAME_ROUND_BIDDING = "BR"
+NAME_REQUEST_ESTIMATION = "ReqEst"
 NAME_MACHINE = "M"
 NAME_AGENT = "A"
 NAME_JOB = "J"
@@ -72,9 +58,9 @@ NAME_SUPPLIER = "S"
 NAME_BID_SLOT = "BS"
 NAME_BID_JOB = "BJ"
 NAME_PLATFORM_ENTITY = "PE"
-NAME_STRATEGY_EVALUATION = "SE"
-NAME_STRATEGY_BIDDING = "SB"
-NAME_ZERO_FILL = int(np.log10(N_JOBS)) + 3 if N_JOBS >= N_MACHINES else int(np.log10(N_MACHINES)) + 3
+NAME_STRATEGY_EVALUATION = "StrEval_"
+NAME_STRATEGY_BIDDING = "StrBid_"
+NAME_ZERO_FILL = int(np.log10(N_JOBS)) + 1 if N_JOBS >= N_MACHINES else int(np.log10(N_MACHINES)) + 1
 
 # Time Parameters
 TIME_KEY_FORMAT = "%Y%m%d%H%M%S%f"  # Formatting datetime instances
@@ -86,24 +72,86 @@ TIME_DEADLINE_MAX = 100  # in units of TIME_INT_INTERVAL
 REF_TIMESTAMP = int(datetime.strptime(REF_DATETIME, TIME_KEY_FORMAT).timestamp())
 JOB_ENERGY_MIN = 50  # in kWh
 JOB_ENERGY_MAX = 200  # in kWh
-MARGIN_PRICE_TIME = 24  # in units of TIME_INT_INTERVAL used for extra offer info after job_id due-time
+MARGIN_PRICE_TIME = 24  # in units of TIME_INT_INTERVAL used for extra price info after job_id due-time
 
-# Commmunication Topics
-TOPIC_PLATFORM = ID_PLATFORM
-TOPIC_SEPARATOR = "."
-TOPIC_PLATFORM_SUPER = TOPIC_PLATFORM + TOPIC_SEPARATOR
-TOPIC_SUPER_MACHINES = "Machines"
-TOPIC_FCC = TOPIC_PLATFORM + TOPIC_SEPARATOR + ID_FCC
-TOPIC_BCC = TOPIC_PLATFORM + TOPIC_SEPARATOR + ID_BCC
-TOPIC_EXTERNAL_MARKET = ID_EXTERNAL_MARKET
-TOPIC_ECE = TOPIC_PLATFORM + TOPIC_SEPARATOR + ID_ECE
-TOPIC_MARKET = TOPIC_PLATFORM + TOPIC_SEPARATOR + ID_MARKET
-TOPIC_PLATFORM_NOTIFY_MACHINE_BIDS_GENERATED = TOPIC_PLATFORM_SUPER + "MACHINE_BIDS_GENERATED"
-TOPIC_PLATFORM_NOTIFY_MACHINE_BID_READY = TOPIC_PLATFORM_SUPER + "MACHINE_BID_READY"
-TOPIC_PLATFORM_MARKET_READY = TOPIC_PLATFORM_SUPER + "MARKET_READY"
-TOPIC_CC_CHECK_REQUESTS_QUEUE = "CC." + "Check_Requests_Queue"
+# Initial number of buckets in all the Hash Tables used
+N_INITIAL_CAPACITY = 50
 
-LIST_JOB_RECORD_FIELDS = list(JobRecField)
+# value of transaction_id to be interpreted as refused agent request
+REFUSED_REQUEST = "0000"
+
+# Return codes used by methods as a result status
+METHOD_SUCCESS = 0
+METHOD_FAILURE = 1
+
+# Constant to control logging to the console
+LOGGING_CONSOLE_ALLOWED = False
+
+
+# Job Datapoint fields
+# ENERGY_DEMAND, TIME_READY, TIME_DEADLINE, TIME_PROCESSING, PRIORITY
+class JobRecField(Enum):
+    JOB_ID = "JOB_ID"
+    PRIORITY = "PRIORITY"
+    STATUS = "STATUS"
+    DATA = "DATA"
+
+
+LIST_JOB_RECORD_FIELDS = [JobRecField.JOB_ID, JobRecField.PRIORITY, JobRecField.STATUS, JobRecField.DATA]
+
+
+# Job constraints
+class JobConstraint(Enum):
+    TIME_READY = 'TIME_READY'
+    TIME_DEADLINE = 'TIME_DEADLINE'
+    TIME_PROCESSING = 'TIME_PROCESSING'
+    ENERGY_DEMAND = 'ENERGY_DEMAND'
+
+
+ENUM_JOB_CONSTRAINTS = [JobConstraint.TIME_READY, JobConstraint.TIME_DEADLINE, JobConstraint.TIME_PROCESSING,
+                        JobConstraint.ENERGY_DEMAND]
+
+
+# list(JobConstraint._member_map_.keys())
+
+
+# job_id status enumeration
+class JobStatus(Enum):
+    ENERGY_NEEDED = "ENERGY_NEEDED"
+    ENERGY_RESERVED = "ENERGY_RESERVED"
+
+
+# ENUM_JOB_CONSTRAINTS = Enum('Job_Status', ['ENERGY_NEEDED', 'ENERGY_RESERVED'])
+ENUM_JOB_STATUS = [JobStatus.ENERGY_NEEDED, JobStatus.ENERGY_RESERVED]
+
+
+# objectives (minimize) for job
+class ObjectiveJob(Enum):
+    COST = "COST"
+    EARLY = "EARLY"
+    NO_TARDY = "NON_TARDY"
+
+
+# objectives (minimize) for machine/strategies
+class ObjectiveGeneral(Enum):
+    MAKESPAN = "MAKESPAN"
+    MAX_PASTDUE = "MAX_PASTDUE"
+    SUM_PASTDUE = "SUM_PASTDUE"
+    NUM_PASTDUE = "NUM_PASTDUE"
+    COST = "COST"
+
+
+# enumeration of objectives eval_profile method
+# use only one type of prefix
+class ObjectiveEval(Enum):
+    GENERAL_SELECTIVE = "SELECTIVE"  # consider only specified objectives
+    GENERAL_COMPREHENSIVE = "GENERAL_COMPREHENSIVE"  # consider all objectives with emphasis on specified objectives
+    JOB_INCLUSIVE = "JOB_INCLUSIVE"  # include job objective as addition to general objective eval_profile
+    JOB_EXCLUSIVE = "JOB_EXCLUSIVE"  # job objective eval_profile separate from general objective eval_profile
+    PRIORITY_LINEAR = "PRIORITY_LINEAR"  # increasing priority increases weight linearly
+    PRIORITY_EXPONENTIAL = "PRIORITY_EXPONENTIAL"  # increasing priority increases weight with exponentially
+    PRIORITY_FACTORIAL = "PRIORITY_FACTORIAL"  # increasing weight priority increases weight by weight-factorial
+
 
 # Dict of nominal objectives weights before specialization
 DICT_WEIGHTS_JOB_NOMINAL = {ObjectiveJob.COST: 1, ObjectiveJob.EARLY: 20, ObjectiveJob.NO_TARDY: 20}
@@ -123,6 +171,17 @@ LIST_GENERAL_OBJECTIVES_ALL = list(ObjectiveGeneral)
 
 # Job Price estimation fields
 LIST_PRICE_ESTIMATION = ['PERIOD_START', 'TIMESTAMP/PRICE']
+
+
+# Schedule types
+class ScheduleSrc(Enum):
+    FIFO = 'FIFO'  # First-in, First-out
+    EDD = 'EDD'  # Earliest due-date first
+    LIFO = 'LIFO'  # Last-in, First-out
+    SPT = 'SPT'  # Shortest processing-time
+    PYOMO = 'PYOMO'  # Pyomo optimal model
+    NONE = 'NONE'  # source not specified
+
 
 # Useful Methods
 

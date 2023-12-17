@@ -21,9 +21,9 @@ config = ConfigParser()
 
 config[ConfigProfile.CUSTOM] = {
     'TIME_REF': '20230109100000000000',
-    'NUM_JOBS': 20,
-    'NUM_MACHINES': 6,
-    'NUM_AGENTS': 3
+    'NUM_JOBS': 2,
+    'NUM_MACHINES': 1,
+    'NUM_AGENTS': 1
 }
 
 config[ConfigProfile.TEST] = {
